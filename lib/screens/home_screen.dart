@@ -1,15 +1,19 @@
 import 'package:flutter/material.dart';
 import 'package:image_picker/image_picker.dart';
+import 'dart:io';
 import '../data/local/database_helper.dart';
 import '../data/models/bill_report.dart';
-import 'dart:io';
-import '../utils/helpers.dart';
 import '../utils/constants.dart';
-import '../widgets/bill_picker/bill_image_picker.dart';
+import '../utils/helpers.dart';
+import '../config/routes.dart';
+import '../widgets/eco_score_widget.dart';
+import '../widgets/category_chart.dart';
+import '../widgets/trend_chart.dart';
+import '../widgets/bill_card.dart';
 import 'scan_screen.dart';
-import 'carbon_diary_screen.dart';
-import 'gallery_screen.dart';
 import 'bill_details_screen.dart';
+import 'carbon_diary_screen.dart';
+import 'sample_gallery_screen.dart';
 
 class HomeScreen extends StatefulWidget {
   const HomeScreen({Key? key}) : super(key: key);
@@ -20,6 +24,7 @@ class HomeScreen extends StatefulWidget {
 
 class _HomeScreenState extends State<HomeScreen> {
   final DatabaseHelper _dbHelper = DatabaseHelper();
+  final ImagePicker _imagePicker = ImagePicker();
   List<BillReport> _recentReports = [];
   bool _isLoading = true;
   double _totalMonthlyCarbon = 0;
@@ -74,39 +79,64 @@ class _HomeScreenState extends State<HomeScreen> {
   Future<String?> _showBillTypeDialog() {
     return showDialog<String>(
       context: context,
+      barrierDismissible: false,
       builder: (BuildContext context) {
         return AlertDialog(
           title: const Text('Select Bill Type'),
-          content: Column(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              ListTile(
-                leading: const Icon(Icons.local_gas_station, color: AppConstants.fuelColor),
-                title: const Text('Petrol Bill'),
-                onTap: () => Navigator.pop(context, AppConstants.billTypePetrol),
-              ),
-              ListTile(
-                leading: const Icon(Icons.shopping_cart, color: AppConstants.foodColor),
-                title: const Text('Grocery Bill'),
-                onTap: () => Navigator.pop(context, AppConstants.billTypeGrocery),
-              ),
-            ],
+          content: Container(
+            width: double.maxFinite,
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                ElevatedButton.icon(
+                  icon: const Icon(Icons.local_gas_station),
+                  label: const Text('Petrol Bill'),
+                  style: ElevatedButton.styleFrom(
+                    backgroundColor: AppConstants.fuelColor,
+                    foregroundColor: Colors.white,
+                    minimumSize: const Size(double.infinity, 48),
+                  ),
+                  onPressed: () => Navigator.pop(context, 'petrol'),
+                ),
+                const SizedBox(height: 12),
+                ElevatedButton.icon(
+                  icon: const Icon(Icons.shopping_basket),
+                  label: const Text('Grocery Bill'),
+                  style: ElevatedButton.styleFrom(
+                    backgroundColor: AppConstants.foodColor,
+                    foregroundColor: Colors.white,
+                    minimumSize: const Size(double.infinity, 48),
+                  ),
+                  onPressed: () => Navigator.pop(context, 'grocery'),
+                ),
+              ],
+            ),
           ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(context),
+              child: const Text('Cancel'),
+            ),
+          ],
         );
       },
     );
   }
 
-  Future<void> _processImage() async {
+  Future<void> _scanReceipt() async {
     try {
-      final XFile? selectedImage = await BillImagePicker.pickImage(context);
+      final XFile? selectedImage = await _imagePicker.pickImage(
+        source: ImageSource.camera,
+        preferredCameraDevice: CameraDevice.rear,
+      );
       
       if (selectedImage == null) {
         if (mounted) {
-          Helpers.showSnackBar(
-            context,
-            'No image selected',
-            isError: true,
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(
+              content: Text('No image selected'),
+              backgroundColor: Colors.red,
+            ),
           );
         }
         return;
@@ -116,7 +146,7 @@ class _HomeScreenState extends State<HomeScreen> {
       final billType = await _showBillTypeDialog();
       
       if (billType != null && mounted) {
-        Navigator.push(
+        await Navigator.push(
           context,
           MaterialPageRoute(
             builder: (context) => ScanScreen(
@@ -124,31 +154,59 @@ class _HomeScreenState extends State<HomeScreen> {
               billType: billType,
             ),
           ),
-        ).then((_) {
-          _refreshData();
-        });
+        );
+        _refreshData();
       }
     } catch (e) {
       if (mounted) {
-        Helpers.showSnackBar(
-          context,
-          'Error picking image: $e',
-          isError: true,
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('Error picking image: $e'),
+            backgroundColor: Colors.red,
+          ),
         );
       }
     }
   }
 
+  /// Open the sample gallery (assets) and send selected image to the ScanScreen
   Future<void> _openGallery() async {
-    Navigator.push(
-      context,
-      MaterialPageRoute(
-        builder: (context) => const GalleryScreen(),
-      ),
-    ).then((_) {
-      _loadRecentReports();
-      _loadMonthlyStats();
-    });
+    try {
+      final selectedAsset = await Navigator.push<String?>(
+        context,
+        MaterialPageRoute(builder: (_) => const SampleGalleryScreen()),
+      );
+
+      if (selectedAsset == null) return;
+
+      // Load asset bytes and write to a temporary file so ScanScreen (which expects XFile)
+      // can consume it the same way as camera images.
+      final byteData = await DefaultAssetBundle.of(context).load(selectedAsset);
+      final bytes = byteData.buffer.asUint8List();
+      final tempDir = Directory.systemTemp;
+      final filename = '${DateTime.now().millisecondsSinceEpoch}_${selectedAsset.split('/').last}';
+      final tempFile = File('${tempDir.path}/$filename');
+      await tempFile.writeAsBytes(bytes, flush: true);
+
+      final xfile = XFile(tempFile.path);
+
+      // Ask for bill type and then navigate to ScanScreen
+      final billType = await _showBillTypeDialog();
+      if (billType != null && mounted) {
+        await Navigator.push(
+          context,
+          MaterialPageRoute(
+            builder: (context) => ScanScreen(
+              imageFile: xfile,
+              billType: billType,
+            ),
+          ),
+        );
+        _refreshData();
+      }
+    } catch (e) {
+      if (mounted) Helpers.showSnackBar(context, 'Error opening sample image: $e', isError: true);
+    }
   }
 
   @override
@@ -156,30 +214,24 @@ class _HomeScreenState extends State<HomeScreen> {
     return Scaffold(
       backgroundColor: AppConstants.surfaceColor,
       appBar: AppBar(
-        title: Row(
-          children: [
-            Container(
-              padding: const EdgeInsets.all(8),
-              decoration: BoxDecoration(
-                color: Colors.white.withOpacity(0.2),
-                borderRadius: BorderRadius.circular(12),
-              ),
-              child: const Icon(Icons.eco, color: Colors.white, size: 24),
-            ),
-            const SizedBox(width: 12),
-            const Text(
-              AppConstants.appName,
-              style: TextStyle(
-                color: Colors.white, 
-                fontWeight: FontWeight.w700,
-                fontSize: 22,
-                letterSpacing: -0.5,
-              ),
-            ),
-          ],
+        title: const Text(
+          AppConstants.appName,
+          style: TextStyle(
+            color: Colors.white,
+            fontWeight: FontWeight.w700,
+            fontSize: 22,
+            letterSpacing: -0.5,
+          ),
         ),
         backgroundColor: AppConstants.primaryGreen,
         elevation: 0,
+        actions: [
+          IconButton(
+            icon: const Icon(Icons.analytics),
+            onPressed: () => Navigator.pushNamed(context, AppRoutes.carbonDiary)
+                .then((_) => _refreshData()),
+          ),
+        ],
         flexibleSpace: Container(
           decoration: const BoxDecoration(
             gradient: LinearGradient(
@@ -208,35 +260,11 @@ class _HomeScreenState extends State<HomeScreen> {
           ),
         ),
       ),
-      floatingActionButton: Container(
-        decoration: BoxDecoration(
-          borderRadius: BorderRadius.circular(16),
-          boxShadow: [
-            BoxShadow(
-              color: AppConstants.primaryGreen.withOpacity(0.3),
-              blurRadius: 12,
-              offset: const Offset(0, 4),
-            ),
-          ],
-        ),
-        child: FloatingActionButton.extended(
-          onPressed: () {
-            Navigator.push(
-              context,
-              MaterialPageRoute(builder: (context) => const CarbonDiaryScreen()),
-            ).then((_) {
-              _loadRecentReports();
-              _loadMonthlyStats();
-            });
-          },
-          label: const Text(
-            'Carbon Diary',
-            style: AppConstants.buttonStyle,
-          ),
-          icon: const Icon(Icons.analytics_outlined, color: Colors.white),
-          backgroundColor: AppConstants.primaryGreen,
-          elevation: 0,
-        ),
+      floatingActionButton: FloatingActionButton.extended(
+        onPressed: _scanReceipt,
+        label: const Text('Scan Bill'),
+        icon: const Icon(Icons.camera_alt, color: Colors.white),
+        backgroundColor: AppConstants.primaryGreen,
       ),
     );
   }
@@ -326,19 +354,19 @@ class _HomeScreenState extends State<HomeScreen> {
             children: [
               Expanded(
                 child: _buildActionButton(
-                  icon: Icons.upload_file,
-                  label: 'Upload Bill',
-                  subtitle: 'Scan from gallery',
+                  icon: Icons.camera_alt,
+                  label: 'Scan Bill',
+                  subtitle: 'Take a photo',
                   color: AppConstants.primaryGreen,
-                  onTap: _processImage,
+                  onTap: _scanReceipt,
                 ),
               ),
               const SizedBox(width: 12),
               Expanded(
                 child: _buildActionButton(
                   icon: Icons.photo_library,
-                  label: 'Sample Gallery',
-                  subtitle: 'Try sample bills',
+                  label: 'Upload Bill',
+                  subtitle: 'Choose sample image',
                   color: AppConstants.packagingColor,
                   onTap: _openGallery,
                 ),

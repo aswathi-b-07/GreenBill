@@ -5,7 +5,7 @@ class AppConstants {
   static const String appName = 'GreenBill';
   static const String appVersion = '1.0.0';
   static const String appTagline = 'Track Your Carbon Footprint';
-
+  
   // Colors - Modern Green Theme
   static const Color primaryGreen = Color(0xFF2E7D32);
   static const Color lightGreen = Color(0xFF69F0AE);

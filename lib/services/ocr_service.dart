@@ -1,4 +1,6 @@
 import 'dart:io';
+import 'dart:convert';
+import 'package:flutter/services.dart';
 import 'package:image_picker/image_picker.dart';
 import 'package:google_mlkit_text_recognition/google_mlkit_text_recognition.dart';
 import '../utils/constants.dart';
@@ -19,6 +21,26 @@ class BillData {
 class OCRService {
   final TextRecognizer _textRecognizer = TextRecognizer();
 
+  // Helper to remove common currency/grouping characters so numbers like "1,234.56" and "₹123" parse correctly
+  String _sanitizeForNumbers(String s) {
+    try {
+      var out = s.replaceAll(',', '');
+      out = out.replaceAll('₹', '');
+      out = out.replaceAll(RegExp(r'(?i)rs\.?'), '');
+      // Keep digits and dots and spaces only for subsequent regexes
+      out = out.replaceAll(RegExp(r'[^0-9\.\s]'), ' ');
+      return out;
+    } catch (e) {
+      return s;
+    }
+  }
+
+  List<double> _extractNumbers(String line) {
+    final sanitized = _sanitizeForNumbers(line);
+    final matches = RegExp(r'(\d+\.?\d*)').allMatches(sanitized);
+    return matches.map((m) => double.tryParse(m.group(1) ?? '') ?? 0).where((d) => d > 0).toList();
+  }
+
   Future<String> extractTextFromImage(XFile imageFile) async {
     try {
       final inputImage = InputImage.fromFile(File(imageFile.path));
@@ -28,6 +50,114 @@ class OCRService {
     } catch (e) {
       print('Error during OCR: $e');
       return '';
+    }
+  }
+
+  /// Return the full RecognizedText object (blocks/lines/elements) for layout-aware parsing
+  Future<RecognizedText?> extractRecognizedText(XFile imageFile) async {
+    try {
+      final inputImage = InputImage.fromFile(File(imageFile.path));
+      final RecognizedText recognizedText = await _textRecognizer.processImage(inputImage);
+      return recognizedText;
+    } catch (e) {
+      print('Error during OCR (recognized): $e');
+      return null;
+    }
+  }
+
+  /// Parse using ML Kit layout (line positions) to better associate names with prices
+  Future<BillData> parseRecognizedText(RecognizedText recognizedText, String billType) async {
+    try {
+      // Collect lines with vertical position
+      final lines = <Map<String, dynamic>>[];
+      for (final block in recognizedText.blocks) {
+        for (final line in block.lines) {
+          final text = line.text.trim();
+          final top = line.boundingBox?.top ?? 0.0;
+          lines.add({'text': text, 'y': top});
+        }
+      }
+
+      // Sort by vertical position
+      lines.sort((a, b) => (a['y'] as double).compareTo(b['y'] as double));
+
+      final items = <BillItem>[];
+
+      for (int i = 0; i < lines.length; i++) {
+        final entry = lines[i];
+        final text = (entry['text'] as String).replaceAll('\u00A0', ' ').trim();
+        if (text.isEmpty) continue;
+
+        final nums = _extractNumbers(text);
+        final alpha = text.replaceAll(RegExp(r'[0-9\.,₹RsRs\.]'), '').trim();
+
+        // Case 1: Line contains both words and numbers -> likely "name ... price"
+        if (nums.isNotEmpty && alpha.isNotEmpty) {
+          final total = nums.last;
+          double quantity = 1.0;
+          double unitPrice = total;
+          if (nums.length >= 2) {
+            // If first number is small, treat as quantity
+            final first = nums.first;
+            if (first > 0 && first <= 100) {
+              quantity = first;
+              unitPrice = total / quantity;
+            }
+          }
+
+          final name = alpha.replaceAll(RegExp(r'[^A-Za-z0-9\s&-]'), '').trim();
+          if (name.length > 1) {
+            items.add(BillItem(
+              id: DateTime.now().millisecondsSinceEpoch.toString() + '_${items.length}',
+              name: name,
+              quantity: quantity,
+              unitPrice: unitPrice,
+              total: total,
+            ));
+          }
+          continue;
+        }
+
+        // Case 2: Line is words only -> check next few lines for numeric-only lines to pair
+        if (alpha.isNotEmpty && nums.isEmpty) {
+          // look ahead up to 2 lines
+          for (int j = i + 1; j <= i + 2 && j < lines.length; j++) {
+            final nextText = (lines[j]['text'] as String).trim();
+            final nextNums = _extractNumbers(nextText);
+            if (nextNums.isNotEmpty) {
+              final total = nextNums.last;
+              final name = alpha.replaceAll(RegExp(r'[^A-Za-z0-9\s&-]'), '').trim();
+              if (name.length > 1) {
+                items.add(BillItem(
+                  id: DateTime.now().millisecondsSinceEpoch.toString() + '_${items.length}',
+                  name: name,
+                  quantity: 1.0,
+                  unitPrice: total,
+                  total: total,
+                ));
+              }
+              break;
+            }
+          }
+        }
+      }
+
+      // Fallbacks: if no items found, use existing intelligent parsers on plain lines
+      if (items.isEmpty) {
+        final plain = recognizedText.text.split('\n').map((s) => s.trim()).where((s) => s.isNotEmpty).toList();
+        if (billType == AppConstants.billTypePetrol) {
+          return _parsePetrolBillIntelligent(plain);
+        } else {
+          return _parseGroceryBillIntelligent(plain);
+        }
+      }
+
+      // Return data and let _applyEmissions filter/match to emission factors
+      final data = BillData(items: items, total: items.fold(0.0, (s, it) => s + it.total));
+      return await _applyEmissions(data, billType);
+    } catch (e) {
+      print('Error parsing recognized text: $e');
+      return BillData(items: [], total: 0);
     }
   }
 
@@ -49,15 +179,316 @@ class OCRService {
 
       print('Cleaned lines: $cleanLines');
 
+      BillData parsed;
       if (billType == AppConstants.billTypePetrol) {
-        return _parsePetrolBillIntelligent(cleanLines);
+        parsed = _parsePetrolBillIntelligent(cleanLines);
       } else {
-        return _parseGroceryBillIntelligent(cleanLines);
+        parsed = _parseGroceryBillIntelligent(cleanLines);
       }
+
+      // Map parsed items to known emission factors and compute carbon footprint
+      final mapped = await _applyEmissions(parsed, billType);
+      return mapped;
     } catch (e) {
       print('Error parsing bill text: $e');
       return BillData(items: [], total: 0);
     }
+  }
+
+  Future<BillData> _applyEmissions(BillData data, String billType) async {
+    try {
+      // Load emission maps from assets
+      final foodJson = await rootBundle.loadString('assets/data/food_emission_factors.json');
+      final fuelJson = await rootBundle.loadString('assets/data/fuel_emission_factors.json');
+      final packagingJson = await rootBundle.loadString('assets/data/packaging_emission_factors.json');
+
+      final Map<String, dynamic> foodMap = json.decode(foodJson) as Map<String, dynamic>;
+      final Map<String, dynamic> fuelMap = json.decode(fuelJson) as Map<String, dynamic>;
+      final Map<String, dynamic> packagingMap = json.decode(packagingJson) as Map<String, dynamic>;
+
+      final List<BillItem> outItems = [];
+
+      for (var item in data.items) {
+        final nameNorm = item.name.toLowerCase();
+
+        String? matchedCategory;
+        double? factor;
+
+        // For petrol bills, match against fuel map first
+        if (billType == AppConstants.billTypePetrol) {
+          for (var k in fuelMap.keys) {
+            if (nameNorm.contains(k.toLowerCase()) || k.toLowerCase().contains(nameNorm)) {
+              matchedCategory = k;
+              factor = (fuelMap[k] as num).toDouble();
+              break;
+            }
+          }
+        }
+
+        // For grocery bills, try food categories
+        if (matchedCategory == null) {
+          for (var k in foodMap.keys) {
+            if (nameNorm.contains(k.toLowerCase()) || _tokenMatch(nameNorm, k.toLowerCase())) {
+              matchedCategory = k;
+              factor = (foodMap[k] as num).toDouble();
+              break;
+            }
+          }
+        }
+
+        // Packaging fallback
+        if (matchedCategory == null) {
+          for (var k in packagingMap.keys) {
+            if (nameNorm.contains(k.toLowerCase()) || _tokenMatch(nameNorm, k.toLowerCase())) {
+              matchedCategory = k;
+              factor = (packagingMap[k] as num).toDouble();
+              break;
+            }
+          }
+        }
+
+        // If we found a factor, compute carbon footprint. Otherwise skip the item.
+        if (factor != null) {
+          final carbon = factor * (item.quantity);
+          final newItem = item.copyWith(carbonFootprint: carbon, category: matchedCategory);
+          outItems.add(newItem);
+        } else {
+          // No match; ignore this parsed line as it's not a known item
+          print('Ignoring unknown item (no emission factor): ${item.name}');
+        }
+      }
+
+      // If nothing mapped, return original (to allow debug screens to appear)
+      if (outItems.isEmpty) {
+        return data;
+      }
+
+      // Return BillData with filtered/mapped items
+      return BillData(items: outItems, total: data.total, date: data.date);
+    } catch (e) {
+      print('Error applying emissions: $e');
+      return data;
+    }
+  }
+
+  bool _tokenMatch(String hay, String needle) {
+    // Split into words and check if any word matches or needle appears in any word
+    final hayTokens = hay.split(RegExp(r'[^a-z0-9]+')).where((s) => s.isNotEmpty).toList();
+    final needleTokens = needle.split(RegExp(r'[^a-z0-9]+')).where((s) => s.isNotEmpty).toList();
+    for (var nt in needleTokens) {
+      for (var ht in hayTokens) {
+        if (ht.contains(nt) || nt.contains(ht)) return true;
+      }
+    }
+    return false;
+  }
+
+  /// Parse directly from an image file using ML Kit line blocks to
+  /// preserve layout and improve pairing of item names with prices.
+  Future<BillData> parseBillFromImage(XFile imageFile, String billType) async {
+    try {
+      final inputImage = InputImage.fromFile(File(imageFile.path));
+      final RecognizedText recognizedText = await _textRecognizer.processImage(inputImage);
+
+      // Build ordered list of lines (preserve layout)
+      final lines = <String>[];
+      for (final block in recognizedText.blocks) {
+        for (final line in block.lines) {
+          lines.add(line.text.trim());
+        }
+      }
+
+      // Fallback to full text if no lines
+      if (lines.isEmpty) {
+        final full = recognizedText.text;
+        return parseBillText(full, billType);
+      }
+
+      // Choose parser based on bill type
+      if (billType == AppConstants.billTypePetrol) {
+        return _parsePetrolBillLayoutAware(lines);
+      } else {
+        return _parseGroceryBillLayoutAware(lines);
+      }
+    } catch (e) {
+      print('Error during layout-aware OCR parsing: $e');
+      return BillData(items: [], total: 0);
+    }
+  }
+
+  BillData _parseGroceryBillLayoutAware(List<String> lines) {
+    final items = <BillItem>[];
+    double total = 0;
+    DateTime? date;
+
+    String? lastNameLine;
+
+    for (int i = 0; i < lines.length; i++) {
+      final raw = lines[i];
+      final line = raw.trim();
+      if (line.isEmpty) continue;
+
+      final lower = line.toLowerCase();
+      if (date == null && (lower.contains('date') || lower.contains('time'))) {
+        date = _extractDate(line) ?? date;
+      }
+
+      // total detection
+      if (total == 0 && (lower.contains('total') || lower.contains('amount') || lower.contains('payable') || lower.contains('grand total'))) {
+        final nums = _extractNumbers(line);
+        if (nums.isNotEmpty) {
+          total = nums.last;
+        }
+        continue;
+      }
+
+      // Try to find numbers in the line
+      final nums = _extractNumbers(line);
+
+      // If line contains an item AND a trailing price
+      if (nums.isNotEmpty) {
+        // find last numeric substring position
+        final match = RegExp(r'(\d+[\.,]?\d*)\s*$').firstMatch(line.replaceAll(',', ''));
+        if (match != null) {
+          final priceStr = match.group(1) ?? '';
+          final price = double.tryParse(priceStr) ?? nums.last;
+          final idx = line.lastIndexOf(priceStr);
+          final name = (idx > 0) ? line.substring(0, idx).trim() : lastNameLine ?? 'Item ${items.length + 1}';
+          double quantity = 1.0;
+          double unitPrice = price;
+
+          // If there are two numbers and the earlier one looks like quantity
+          if (nums.length >= 2) {
+            final a = nums[0];
+            final b = nums[nums.length - 1];
+            // if first is small and second looks like total
+            if (a > 0 && a <= 100 && b >= 0) {
+              quantity = a;
+              unitPrice = (b / quantity);
+            }
+          }
+
+          // Avoid nonsense names
+          final cleanName = name.replaceAll(RegExp(r'[^A-Za-z0-9\s&-]'), '').trim();
+          if (cleanName.length > 0 && price > 0) {
+            items.add(BillItem(
+              id: DateTime.now().millisecondsSinceEpoch.toString() + '_${items.length}',
+              name: cleanName,
+              quantity: quantity,
+              unitPrice: unitPrice,
+              total: price,
+            ));
+          }
+
+          lastNameLine = null;
+          continue;
+        }
+
+        // If line is like "2000 20.00" (numbers only) and previous line contains name
+        final onlyNumbers = RegExp(r'^[\d\s\.,]+$').hasMatch(line.replaceAll(',', ''));
+        if (onlyNumbers && lastNameLine != null) {
+          final parts = _extractNumbers(line);
+          if (parts.isNotEmpty) {
+            final qty = parts.length >= 2 ? parts[0] : 1.0;
+            final tot = parts.length >= 2 ? parts[1] : parts[0];
+            items.add(BillItem(
+              id: DateTime.now().millisecondsSinceEpoch.toString() + '_${items.length}',
+              name: lastNameLine,
+              quantity: qty,
+              unitPrice: tot / (qty > 0 ? qty : 1.0),
+              total: tot,
+            ));
+            lastNameLine = null;
+            continue;
+          }
+        }
+      }
+
+      // If line looks like a name (letters and spaces) store as potential name
+      if (RegExp(r'^[A-Za-z\s&\-]{3,}$').hasMatch(line)) {
+        lastNameLine = line;
+      }
+    }
+
+    // compute total if not found
+    if (total == 0 && items.isNotEmpty) {
+      total = items.fold(0.0, (s, it) => s + it.total);
+    }
+
+    return BillData(items: items, total: total, date: date);
+  }
+
+  BillData _parsePetrolBillLayoutAware(List<String> lines) {
+    final items = <BillItem>[];
+    double total = 0;
+    DateTime? date;
+
+    // collect candidate numeric lines
+    final candidates = <Map<String, dynamic>>[];
+    for (int i = 0; i < lines.length; i++) {
+      final line = lines[i];
+      final lower = line.toLowerCase();
+      if (date == null && (lower.contains('date') || lower.contains('time'))) {
+        date = _extractDate(line) ?? date;
+      }
+      final nums = _extractNumbers(line);
+      if (nums.isNotEmpty) {
+        candidates.add({'index': i, 'line': line, 'nums': nums});
+      }
+      if (lower.contains('total') || lower.contains('amount')) {
+        final n = _extractNumbers(line);
+        if (n.isNotEmpty) total = n.last;
+      }
+    }
+
+    // Try to find pattern: small number (litres) and a larger number (amount) on same or adjacent lines
+    for (int i = 0; i < candidates.length; i++) {
+      final entry = candidates[i];
+      final nums = (entry['nums'] as List<double>);
+      if (nums.length >= 2) {
+        // If first is liters (<=100) and second is amount
+        if (nums[0] > 0 && nums[0] <= 100 && nums[1] > nums[0]) {
+          final liters = nums[0];
+          final amount = nums[1];
+          final unitPrice = amount / liters;
+          items.add(BillItem(
+            id: DateTime.now().millisecondsSinceEpoch.toString(),
+            name: 'Petrol',
+            quantity: liters,
+            unitPrice: unitPrice,
+            total: amount,
+          ));
+          if (total == 0) total = amount;
+          break;
+        }
+      }
+
+      // Try neighbouring entries
+      if (i < candidates.length - 1) {
+        final n1 = (candidates[i]['nums'] as List<double>);
+        final n2 = (candidates[i + 1]['nums'] as List<double>);
+        if (n1.isNotEmpty && n2.isNotEmpty) {
+          final small = n1.first <= 100 ? n1.first : (n2.first <= 100 ? n2.first : null);
+          final large = (n2..sort()).lastWhere((v) => v >= (small ?? 0), orElse: () => n2.last);
+          if (small != null && large != null && large > small) {
+            final liters = small;
+            final amount = large;
+            final unitPrice = amount / liters;
+            items.add(BillItem(
+              id: DateTime.now().millisecondsSinceEpoch.toString(),
+              name: 'Petrol',
+              quantity: liters,
+              unitPrice: unitPrice,
+              total: amount,
+            ));
+            if (total == 0) total = amount;
+            break;
+          }
+        }
+      }
+    }
+
+    return BillData(items: items, total: total, date: date);
   }
 
   BillData _parsePetrolBill(List<String> lines) {
@@ -460,18 +891,15 @@ class OCRService {
         fuelType = 'Petrol';
       }
 
-      // Extract all numbers with context
-      final numberMatches = RegExp(r'(\d+\.?\d*)').allMatches(line);
-      for (var match in numberMatches) {
-        final number = double.tryParse(match.group(1) ?? '');
-        if (number != null && number > 0) {
-          numbers.add({
-            'value': number,
-            'line': line,
-            'index': i,
-            'position': match.start,
-          });
-        }
+      // Extract all numbers with context (sanitized to handle commas/currency)
+      final extractedNums = _extractNumbers(line);
+      for (var num in extractedNums) {
+        numbers.add({
+          'value': num,
+          'line': line,
+          'index': i,
+          'position': 0,
+        });
       }
     }
 
@@ -480,14 +908,20 @@ class OCRService {
     // Find liters and amounts by analyzing number patterns
     double? liters;
     double? amount;
-    
-    // Look for patterns like "45.50" followed by "4185.75" (liters and amount)
-    for (int i = 0; i < numbers.length - 1; i++) {
-      final num1 = numbers[i]['value'] as double;
-      final num2 = numbers[i + 1]['value'] as double;
-      
-      // If num1 is small (likely liters) and num2 is large (likely amount)
-      if (num1 < 100 && num2 > 1000) {
+    // Filter out numbers that come from lines likely to be dates, bill numbers or other metadata
+    final filteredNumbers = numbers.where((n) {
+      final l = (n['line'] as String).toLowerCase();
+      if (l.contains('date') || l.contains('time') || l.contains('bill no') || l.contains('invoice')) return false;
+      return true;
+    }).toList();
+
+    // Look for patterns like "45.50" followed by "4185.75" (liters and amount) using filtered numbers
+    for (int i = 0; i < filteredNumbers.length - 1; i++) {
+      final num1 = filteredNumbers[i]['value'] as double;
+      final num2 = filteredNumbers[i + 1]['value'] as double;
+
+      // Prefer a small num (likely liters) and a larger num (likely amount). Use thresholds to avoid date artifacts.
+      if (num1 > 0 && num1 < 100 && num2 > num1 * 2) {
         liters = num1;
         amount = num2;
         print('Found potential liters: $liters, amount: $amount');
@@ -495,21 +929,22 @@ class OCRService {
       }
     }
 
-    // If we didn't find the pattern, try to find the largest number as amount
-    if (amount == null && numbers.isNotEmpty) {
-      final sortedNumbers = numbers.map((n) => n['value'] as double).toList()..sort();
-      amount = sortedNumbers.last;
-      print('Using largest number as amount: $amount');
+    // If we didn't find the pattern, try to pick a reasonable amount (largest sensible monetary value)
+    if (amount == null && filteredNumbers.isNotEmpty) {
+      final numericList = filteredNumbers.map((n) => n['value'] as double).where((v) => v > 0).toList();
+      numericList.sort();
+      // pick the largest number that is greater than a minimum monetary threshold
+      amount = numericList.lastWhere((v) => v >= 10, orElse: () => numericList.isNotEmpty ? numericList.last : 0);
+      print('Using selected number as amount: $amount');
     }
 
     // If we still don't have liters, try to find a reasonable value
-    if (liters == null && numbers.isNotEmpty) {
-      // Look for numbers between 1 and 100 (reasonable liter range)
-      final candidateLiters = numbers
+    if (liters == null && filteredNumbers.isNotEmpty) {
+      // Look for numbers between 1 and 100 (reasonable liter range), preferring decimals
+      final candidateLiters = filteredNumbers
           .map((n) => n['value'] as double)
           .where((n) => n >= 1 && n <= 100)
           .toList();
-      
       if (candidateLiters.isNotEmpty) {
         liters = candidateLiters.first;
         print('Using candidate liters: $liters');
@@ -568,18 +1003,15 @@ class OCRService {
         continue;
       }
 
-      // Extract all numbers with context
-      final numberMatches = RegExp(r'(\d+\.?\d*)').allMatches(line);
-      for (var match in numberMatches) {
-        final number = double.tryParse(match.group(1) ?? '');
-        if (number != null && number > 0) {
-          numbers.add({
-            'value': number,
-            'line': line,
-            'index': i,
-            'position': match.start,
-          });
-        }
+      // Extract all numbers with context (sanitized to handle commas/currency)
+      final extractedNums = _extractNumbers(line);
+      for (var num in extractedNums) {
+        numbers.add({
+          'value': num,
+          'line': line,
+          'index': i,
+          'position': 0,
+        });
       }
 
       // Try to parse item line

@@ -39,22 +39,25 @@ class _ScanScreenState extends State<ScanScreen> {
     setState(() => _isProcessing = true);
 
     try {
-      // Extract text from image
-      final extractedText = await _ocrService.extractTextFromImage(widget.imageFile);
-      
-      if (extractedText.isEmpty) {
+      // Extract ML Kit RecognizedText and parse it using layout-aware parser
+      final recognized = await _ocrService.extractRecognizedText(widget.imageFile);
+      BillData parsedData;
+      if (recognized != null) {
+        parsedData = await _ocrService.parseRecognizedText(recognized, widget.billType);
+      } else {
+        // Fallback: extract plain text and parse
+        final plain = await _ocrService.extractTextFromImage(widget.imageFile);
+        parsedData = await _ocrService.parseBillText(plain, widget.billType);
+      }
+
+      if (parsedData.items.isEmpty) {
         if (!mounted) return;
         Helpers.showSnackBar(
           context,
-          'No text found in image. Please try again.',
+          'No items were detected in the image. Opening debug view to inspect OCR.',
           isError: true,
         );
-        Navigator.pop(context);
-        return;
       }
-
-      // Parse the extracted text
-      final parsedData = await _ocrService.parseBillText(extractedText, widget.billType);
       
       if (!mounted) return;
       

@@ -51,9 +51,6 @@ flutter:
     - assets/images/sample_bills/
     - assets/data/
     - assets/icons/
-    - assets/images/sample_bills/
     - assets/data/food_emission_factors.json
     - assets/data/fuel_emission_factors.json
     - assets/data/packaging_emission_factors.json
-    - assets/icons/
-    - assets/data/
