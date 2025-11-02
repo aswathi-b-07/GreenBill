@@ -1,0 +1,59 @@
+name: greenbill
+description: India-specific carbon footprint tracker for bills and receipts
+
+publish_to: 'none'
+version: 1.0.0+1
+
+environment:
+  sdk: '>=3.0.0 <4.0.0'
+
+dependencies:
+  flutter:
+    sdk: flutter
+  
+  # State Management
+  provider: ^6.1.1
+  
+  # Database
+  sqflite: ^2.3.0
+  path_provider: ^2.1.1
+  path: ^1.8.3
+  
+  # OCR & Image Processing
+  google_mlkit_text_recognition: ^0.11.0
+  image_picker: ^1.0.4
+  crop_image: ^1.0.11
+  
+  # PDF Generation
+  pdf: ^3.10.4
+  printing: ^5.11.1
+  
+  # Charts
+  fl_chart: ^0.65.0
+  
+  # UI Components
+  flutter_svg: ^2.0.9
+  intl: ^0.18.1
+  share_plus: ^7.2.1
+  
+  # Utilities
+  uuid: ^4.2.1
+
+dev_dependencies:
+  flutter_test:
+    sdk: flutter
+  flutter_lints: ^3.0.0
+
+flutter:
+  uses-material-design: true
+  assets:
+    - assets/images/
+    - assets/images/sample_bills/
+    - assets/data/
+    - assets/icons/
+    - assets/images/sample_bills/
+    - assets/data/food_emission_factors.json
+    - assets/data/fuel_emission_factors.json
+    - assets/data/packaging_emission_factors.json
+    - assets/icons/
+    - assets/data/

@@ -1,0 +1,7 @@
+{
+  "plastic": 6.0,
+  "paper": 1.0,
+  "glass": 0.8,
+  "metal": 4.0,
+  "other": 2.0
+}

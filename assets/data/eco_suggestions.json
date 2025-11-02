@@ -1,0 +1,40 @@
+{
+  "suggestions": [
+    {
+      "title": "Choose Plant-Based Options",
+      "description": "Consider reducing meat consumption by incorporating more plant-based meals into your diet.",
+      "category": "Meat",
+      "potentialSavings": 2.5
+    },
+    {
+      "title": "Buy Local and Seasonal",
+      "description": "Choose locally grown fruits and vegetables that are in season to reduce transportation emissions.",
+      "category": "Fruits",
+      "potentialSavings": 1.2
+    },
+    {
+      "title": "Reduce Dairy Consumption",
+      "description": "Try plant-based milk alternatives like soy, almond, or oat milk to reduce dairy emissions.",
+      "category": "Dairy",
+      "potentialSavings": 1.8
+    },
+    {
+      "title": "Buy in Bulk",
+      "description": "Purchase grains and dry goods in bulk to reduce packaging waste and emissions.",
+      "category": "Grains",
+      "potentialSavings": 0.8
+    },
+    {
+      "title": "Choose Eco-Friendly Transportation",
+      "description": "Consider using public transport, carpooling, or cycling for shorter trips.",
+      "category": "Fuel",
+      "potentialSavings": 3.2
+    },
+    {
+      "title": "Maintain Your Vehicle",
+      "description": "Regular maintenance and proper tire pressure can improve fuel efficiency.",
+      "category": "Fuel",
+      "potentialSavings": 1.5
+    }
+  ]
+}
