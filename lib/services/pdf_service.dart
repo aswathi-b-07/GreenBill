@@ -7,38 +7,44 @@ import '../data/models/bill_report.dart';
 import '../data/models/eco_suggestion.dart';
 
 class PDFService {
-  Future<File> generateBillPDF(
+  Future<File?> generateBillPDF(
     BillReport report,
     List<EcoSuggestion> suggestions,
   ) async {
-    final pdf = pw.Document();
+    try {
+      final pdf = pw.Document();
 
-    pdf.addPage(
-      pw.MultiPage(
-        pageFormat: PdfPageFormat.a4,
-        build: (context) {
-          return [
-            _buildHeader(report),
-            pw.SizedBox(height: 20),
-            _buildSummary(report),
-            pw.SizedBox(height: 20),
-            _buildItemsTable(report),
-            pw.SizedBox(height: 20),
-            _buildCategoryBreakdown(report),
-            pw.SizedBox(height: 20),
-            _buildEcoSuggestions(suggestions),
-            pw.SizedBox(height: 20),
-            _buildFooter(),
-          ];
-        },
-      ),
-    );
+      pdf.addPage(
+        pw.MultiPage(
+          pageFormat: PdfPageFormat.a4,
+          build: (context) {
+            return [
+              _buildHeader(report),
+              pw.SizedBox(height: 20),
+              _buildSummary(report),
+              pw.SizedBox(height: 20),
+              _buildItemsTable(report),
+              pw.SizedBox(height: 20),
+              _buildCategoryBreakdown(report),
+              pw.SizedBox(height: 20),
+              _buildEcoSuggestions(suggestions),
+              pw.SizedBox(height: 20),
+              _buildFooter(),
+            ];
+          },
+        ),
+      );
 
-    final output = await getTemporaryDirectory();
-    final file = File('${output.path}/greenbill_${report.id}.pdf');
-    await file.writeAsBytes(await pdf.save());
+      final output = await getTemporaryDirectory();
+      final file = File('${output.path}/greenbill_${report.id}.pdf');
+      await file.writeAsBytes(await pdf.save());
 
-    return file;
+      return file;
+    } catch (e, stackTrace) {
+      print('Error generating PDF: $e');
+      print(stackTrace);
+      return null;
+    }
   }
 
   pw.Widget _buildHeader(BillReport report) {

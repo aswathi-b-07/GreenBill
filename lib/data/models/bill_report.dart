@@ -4,6 +4,7 @@ import 'bill_item.dart';
 class BillReport {
   final String id;
   final String billType;
+  final String userId;
   final DateTime timestamp;
   final List<BillItem> items;
   final double totalCarbonFootprint;
@@ -15,6 +16,7 @@ class BillReport {
   BillReport({
     required this.id,
     required this.billType,
+    required this.userId,
     required this.timestamp,
     required this.items,
     required this.totalCarbonFootprint,
@@ -34,6 +36,7 @@ class BillReport {
     return BillReport(
       id: map['id'] as String,
       billType: map['billType'] as String,
+      userId: map['userId'] as String,
       timestamp: DateTime.parse(map['timestamp'] as String),
       items: itemsList.map((item) => BillItem.fromMap(item)).toList(),
       totalCarbonFootprint: (map['totalCarbonFootprint'] as num).toDouble(),
@@ -45,9 +48,10 @@ class BillReport {
   }
 
   Map<String, dynamic> toMap() {
-    return {
+    final map = {
       'id': id,
       'billType': billType,
+      'userId': userId,
       'timestamp': timestamp.toIso8601String(),
       'items': json.encode(items.map((item) => item.toMap()).toList()),
       'totalCarbonFootprint': totalCarbonFootprint,
@@ -56,6 +60,20 @@ class BillReport {
       'ecoScore': ecoScore,
       'imagePath': imagePath,
     };
+
+    // Verify all required fields are present and not null
+    final requiredFields = [
+      'id', 'billType', 'userId', 'timestamp', 'items', 
+      'totalCarbonFootprint', 'totalAmount', 'categoryBreakdown', 'ecoScore'
+    ];
+    
+    for (final field in requiredFields) {
+      if (!map.containsKey(field) || map[field] == null) {
+        throw Exception('Required field $field is missing or null');
+      }
+    }
+
+    return map;
   }
 
   @override

@@ -10,6 +10,7 @@ import '../widgets/eco_score_widget.dart';
 import '../widgets/category_chart.dart';
 import '../widgets/trend_chart.dart';
 import '../widgets/bill_card.dart';
+import '../services/auth_service.dart';
 import 'scan_screen.dart';
 import 'bill_details_screen.dart';
 import 'carbon_diary_screen.dart';
@@ -34,8 +35,17 @@ class _HomeScreenState extends State<HomeScreen> {
   @override
   void initState() {
     super.initState();
+    _checkAuth();
     _loadRecentReports();
     _loadMonthlyStats();
+  }
+
+  void _checkAuth() {
+    if (!AuthService().isLoggedIn) {
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        Navigator.pushReplacementNamed(context, '/login');
+      });
+    }
   }
 
   @override
@@ -55,25 +65,45 @@ class _HomeScreenState extends State<HomeScreen> {
   Future<void> _loadRecentReports() async {
     setState(() => _isLoading = true);
     try {
-      final reports = await _dbHelper.getAllBillReports();
-      setState(() {
-        _recentReports = reports.take(5).toList();
-        _isLoading = false;
-      });
+      final currentUser = AuthService().currentUser;
+      if (currentUser == null) {
+        if (mounted) {
+          Navigator.pushReplacementNamed(context, '/login');
+        }
+        return;
+      }
+      final reports = await _dbHelper.getAllBillReports(currentUser.id);
+      if (mounted) {
+        setState(() {
+          _recentReports = reports.take(5).toList();
+          _isLoading = false;
+        });
+      }
     } catch (e) {
       print('Error loading reports: $e');
-      setState(() => _isLoading = false);
+      if (mounted) {
+        setState(() => _isLoading = false);
+      }
     }
   }
 
   Future<void> _loadMonthlyStats() async {
     final now = DateTime.now();
-    final stats = await _dbHelper.getMonthlyStats(now.year, now.month);
-    setState(() {
-      _totalMonthlyCarbon = stats['totalCarbon'] ?? 0;
-      _totalScans = stats['count']?.toInt() ?? 0;
-      _averagePerBill = _totalScans > 0 ? _totalMonthlyCarbon / _totalScans : 0;
-    });
+    final currentUser = AuthService().currentUser;
+    if (currentUser == null) {
+      if (mounted) {
+        Navigator.pushReplacementNamed(context, '/login');
+      }
+      return;
+    }
+    final stats = await _dbHelper.getMonthlyStats(currentUser.id, now.year, now.month);
+    if (mounted) {
+      setState(() {
+        _totalMonthlyCarbon = stats['totalCarbon'] ?? 0;
+        _totalScans = stats['count']?.toInt() ?? 0;
+        _averagePerBill = _totalScans > 0 ? _totalMonthlyCarbon / _totalScans : 0;
+      });
+    }
   }
 
   Future<String?> _showBillTypeDialog() {

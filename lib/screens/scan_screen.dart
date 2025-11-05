@@ -30,7 +30,25 @@ class _ScanScreenState extends State<ScanScreen> {
   @override
   void initState() {
     super.initState();
-    _processImage();
+    _initializeAndProcess();
+  }
+
+  Future<void> _initializeAndProcess() async {
+    try {
+      await _ocrService.initialize();
+      await _processImage();
+    } catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Failed to initialize OCR: $e')),
+      );
+    }
+  }
+
+  @override
+  void dispose() {
+    _ocrService.dispose();
+    super.dispose();
   }
 
   Future<void> _processImage() async {
@@ -130,11 +148,5 @@ class _ScanScreenState extends State<ScanScreen> {
         ),
       ),
     );
-  }
-
-  @override
-  void dispose() {
-    _ocrService.dispose();
-    super.dispose();
   }
 }

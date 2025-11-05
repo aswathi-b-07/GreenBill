@@ -13,9 +13,12 @@ dependencies:
   
   # State Management
   provider: ^6.1.1
+
+  crypto: ^3.0.3
   
   # Database
   sqflite: ^2.3.0
+  sqflite_common_ffi: ^2.2.0
   path_provider: ^2.1.1
   path: ^1.8.3
   
@@ -38,6 +41,7 @@ dependencies:
   
   # Utilities
   uuid: ^4.2.1
+  shared_preferences: ^2.2.2
 
 dev_dependencies:
   flutter_test:

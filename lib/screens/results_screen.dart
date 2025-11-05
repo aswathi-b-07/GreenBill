@@ -8,6 +8,7 @@ import '../data/repositories/bill_repository.dart';
 import '../services/categorization_service.dart';
 import '../services/suggestion_service.dart';
 import '../services/pdf_service.dart';
+import '../services/auth_service.dart';
 import '../widgets/category_chart.dart';
 import '../widgets/eco_score_widget.dart';
 import '../widgets/emission_breakdown.dart';
@@ -85,9 +86,21 @@ class _ResultsScreenState extends State<ResultsScreen> {
     // Generate suggestions based on items
     _suggestions = await _suggestionService.getSuggestions(widget.billItems);
 
+    final currentUser = AuthService().currentUser;
+    if (currentUser == null) {
+      if (mounted) {
+        Navigator.pushReplacementNamed(context, '/login');
+      }
+      return;
+    }
+
+    // Set the current user in the repository
+    _billRepository.setCurrentUser(currentUser.id);
+
     // Create bill report
     _report = BillReport(
       id: DateTime.now().millisecondsSinceEpoch.toString(),
+      userId: currentUser.id, // Associate with current user
       billType: widget.billType,
       timestamp: DateTime.now(), // Use current date instead of parsed date
       items: widget.billItems,
@@ -114,6 +127,35 @@ class _ResultsScreenState extends State<ResultsScreen> {
     setState(() => _isSaving = true);
 
     try {
+      // Verify user is logged in
+      final currentUser = AuthService().currentUser;
+      if (currentUser == null) {
+        throw Exception('User not logged in');
+      }
+
+      // Verify report is ready
+      if (_report == null) {
+        throw Exception('Report not ready yet');
+      }
+
+      // Double check userId is set
+      if (_report.userId != currentUser.id) {
+        _report = BillReport(
+          id: _report.id,
+          userId: currentUser.id,
+          billType: _report.billType,
+          timestamp: _report.timestamp,
+          items: _report.items,
+          totalCarbonFootprint: _report.totalCarbonFootprint,
+          totalAmount: _report.totalAmount,
+          categoryBreakdown: _report.categoryBreakdown,
+          ecoScore: _report.ecoScore,
+          imagePath: _report.imagePath,
+        );
+      }
+
+      print('Saving bill report: ${_report.toString()}');
+
       // Save bill report to database
       await _billRepository.saveBillReport(_report);
 
@@ -128,10 +170,12 @@ class _ResultsScreenState extends State<ResultsScreen> {
         );
 
         // Share PDF
-        await Share.shareXFiles(
-          [XFile(pdfFile.path)],
-          text: 'Carbon footprint report for ${widget.billType}',
-        );
+        if (pdfFile != null) {
+          await Share.shareXFiles(
+            [XFile(pdfFile.path)],
+            text: 'Carbon footprint report for ${widget.billType}',
+          );
+        }
 
         // Navigate back to home
         if (mounted) {

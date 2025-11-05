@@ -19,7 +19,33 @@ class BillData {
 }
 
 class OCRService {
-  final TextRecognizer _textRecognizer = TextRecognizer();
+  TextRecognizer? _textRecognizer;
+  bool _initialized = false;
+
+  Future<void> initialize() async {
+    if (_initialized) return;
+
+    try {
+      _textRecognizer = TextRecognizer();
+      _initialized = true;
+      print('Text recognizer initialized successfully');
+    } catch (e) {
+      print('Error initializing text recognizer: $e');
+      rethrow;
+    }
+  }
+
+  Future<void> dispose() async {
+    try {
+      if (_textRecognizer != null) {
+        await _textRecognizer!.close();
+        _textRecognizer = null;
+        _initialized = false;
+      }
+    } catch (e) {
+      print('Error disposing text recognizer: $e');
+    }
+  }
 
   // Helper to remove common currency/grouping characters so numbers like "1,234.56" and "₹123" parse correctly
   String _sanitizeForNumbers(String s) {
@@ -43,11 +69,25 @@ class OCRService {
 
   Future<String> extractTextFromImage(XFile imageFile) async {
     try {
+      if (!_initialized) {
+        await initialize();
+      }
+      
+      if (_textRecognizer == null) {
+        throw Exception('Text recognizer not initialized');
+      }
+
+      print('Processing image file: ${imageFile.path}');
       final inputImage = InputImage.fromFile(File(imageFile.path));
-      final RecognizedText recognizedText = await _textRecognizer.processImage(inputImage);
+      if (_textRecognizer == null) {
+        throw Exception('Text recognizer not initialized');
+      }
+      final RecognizedText recognizedText = await _textRecognizer!.processImage(inputImage);
       print('Extracted text: ${recognizedText.text}');
       return recognizedText.text;
-    } catch (e) {
+    } catch (e, stackTrace) {
+      print('Error during OCR: $e');
+      print('Stack trace: $stackTrace');
       print('Error during OCR: $e');
       return '';
     }
@@ -56,11 +96,21 @@ class OCRService {
   /// Return the full RecognizedText object (blocks/lines/elements) for layout-aware parsing
   Future<RecognizedText?> extractRecognizedText(XFile imageFile) async {
     try {
+      if (!_initialized) {
+        await initialize();
+      }
+      
+      if (_textRecognizer == null) {
+        throw Exception('Text recognizer not initialized');
+      }
+
+      print('Processing image for recognition: ${imageFile.path}');
       final inputImage = InputImage.fromFile(File(imageFile.path));
-      final RecognizedText recognizedText = await _textRecognizer.processImage(inputImage);
+      final RecognizedText recognizedText = await _textRecognizer!.processImage(inputImage);
       return recognizedText;
-    } catch (e) {
+    } catch (e, stackTrace) {
       print('Error during OCR (recognized): $e');
+      print('Stack trace: $stackTrace');
       return null;
     }
   }
@@ -287,8 +337,12 @@ class OCRService {
   /// preserve layout and improve pairing of item names with prices.
   Future<BillData> parseBillFromImage(XFile imageFile, String billType) async {
     try {
+      if (_textRecognizer == null) {
+        throw Exception("Text recognizer not initialized");
+      }
+      
       final inputImage = InputImage.fromFile(File(imageFile.path));
-      final RecognizedText recognizedText = await _textRecognizer.processImage(inputImage);
+      final RecognizedText recognizedText = await _textRecognizer!.processImage(inputImage);
 
       // Build ordered list of lines (preserve layout)
       final lines = <String>[];
@@ -1407,7 +1461,4 @@ class OCRService {
     return foodItems.take(5).toList(); // Limit to 5 food items
   }
 
-  void dispose() {
-    _textRecognizer.close();
-  }
 }
