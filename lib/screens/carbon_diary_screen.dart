@@ -2,8 +2,11 @@ import 'package:flutter/material.dart';
 import '../data/repositories/bill_repository.dart';
 import '../data/models/bill_report.dart';
 import '../widgets/trend_chart.dart';
+import '../widgets/carbon_insight_card.dart';
+import '../widgets/time_range_selector.dart';
 import '../utils/helpers.dart';
 import '../utils/constants.dart';
+import '../services/auth_service.dart';
 import 'bill_details_screen.dart';
 
 class CarbonDiaryScreen extends StatefulWidget {
@@ -18,11 +21,48 @@ class _CarbonDiaryScreenState extends State<CarbonDiaryScreen> {
   List<BillReport> _allReports = [];
   bool _isLoading = true;
   String _filterType = 'all'; // 'all', 'petrol', 'supermarket'
+  String _timeRange = '1M'; // '1W', '1M', '3M', '6M', '1Y', 'ALL'
+
+  DateTime get _rangeStartDate {
+    final now = DateTime.now();
+    switch (_timeRange) {
+      case '1W':
+        return now.subtract(const Duration(days: 7));
+      case '1M':
+        return DateTime(now.year, now.month - 1, now.day);
+      case '3M':
+        return DateTime(now.year, now.month - 3, now.day);
+      case '6M':
+        return DateTime(now.year, now.month - 6, now.day);
+      case '1Y':
+        return DateTime(now.year - 1, now.month, now.day);
+      case 'ALL':
+      default:
+        return DateTime(2000); // A date far in the past
+    }
+  }
 
   @override
   void initState() {
     super.initState();
-    _loadReports();
+    _initializeAndLoadReports();
+  }
+
+  Future<void> _initializeAndLoadReports() async {
+    final currentUser = AuthService().currentUser;
+    if (currentUser == null) {
+      if (mounted) {
+        Helpers.showSnackBar(
+          context,
+          'Please login to view your carbon diary',
+          isError: true,
+        );
+        Navigator.pushReplacementNamed(context, '/login');
+      }
+      return;
+    }
+    _billRepository.setCurrentUser(currentUser.id);
+    await _loadReports();
   }
 
   Future<void> _loadReports() async {
@@ -46,8 +86,11 @@ class _CarbonDiaryScreenState extends State<CarbonDiaryScreen> {
   }
 
   List<BillReport> get _filteredReports {
-    if (_filterType == 'all') return _allReports;
-    return _allReports.where((r) => r.billType == _filterType).toList();
+    final dateFiltered = _allReports
+        .where((r) => r.timestamp.isAfter(_rangeStartDate))
+        .toList();
+    if (_filterType == 'all') return dateFiltered;
+    return dateFiltered.where((r) => r.billType == _filterType).toList();
   }
 
   @override
@@ -61,14 +104,26 @@ class _CarbonDiaryScreenState extends State<CarbonDiaryScreen> {
           ? const Center(child: CircularProgressIndicator())
           : _allReports.isEmpty
               ? _buildEmptyState()
-              : Column(
-                  children: [
-                    _buildFilterChips(),
-                    _buildStatsCard(),
-                    if (_filteredReports.length >= 3)
-                      TrendChart(reports: _filteredReports),
-                    Expanded(child: _buildReportsList()),
-                  ],
+              : SingleChildScrollView(
+                  child: Column(
+                    children: [
+                      _buildFilterChips(),
+                      TimeRangeSelector(
+                        selectedRange: _timeRange,
+                        onRangeSelected: (value) {
+                          setState(() {
+                            _timeRange = value;
+                          });
+                        },
+                      ),
+                      _buildStatsCard(),
+                      if (_filteredReports.length >= 3) ...[
+                        TrendChart(reports: _filteredReports),
+                        CarbonInsightCard(reports: _filteredReports),
+                      ],
+                      _buildReportsList(),
+                    ],
+                  ),
                 ),
     );
   }
@@ -184,13 +239,45 @@ class _CarbonDiaryScreenState extends State<CarbonDiaryScreen> {
   }
 
   Widget _buildReportsList() {
+    final groupedReports = _groupReportsByMonth(_filteredReports);
     return ListView.builder(
       padding: const EdgeInsets.all(16),
-      itemCount: _filteredReports.length,
+      shrinkWrap: true,
+      physics: const NeverScrollableScrollPhysics(),
+      itemCount: groupedReports.length,
       itemBuilder: (context, index) {
-        return _buildReportCard(_filteredReports[index]);
+        final entry = groupedReports.entries.elementAt(index);
+        return Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Padding(
+              padding: const EdgeInsets.symmetric(vertical: 8),
+              child: Text(
+                '${Helpers.getMonthName(entry.key.month)} ${entry.key.year}',
+                style: const TextStyle(
+                  fontSize: 18,
+                  fontWeight: FontWeight.bold,
+                ),
+              ),
+            ),
+            ...entry.value.map((report) => _buildReportCard(report)).toList(),
+          ],
+        );
       },
     );
+  }
+
+  Map<DateTime, List<BillReport>> _groupReportsByMonth(List<BillReport> reports) {
+    final grouped = <DateTime, List<BillReport>>{};
+    for (var report in reports) {
+      final key = DateTime(report.timestamp.year, report.timestamp.month);
+      if (!grouped.containsKey(key)) {
+        grouped[key] = [];
+      }
+      grouped[key]!.add(report);
+    }
+    return Map.fromEntries(
+        grouped.entries.toList()..sort((a, b) => b.key.compareTo(a.key)));
   }
 
   Widget _buildReportCard(BillReport report) {

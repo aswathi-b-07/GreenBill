@@ -39,6 +39,11 @@ class Helpers {
     return 'Needs Improvement';
   }
 
+  // Get month name
+  static String getMonthName(int month) {
+    return DateFormat('MMMM').format(DateTime(2025, month));
+  }
+
   // Get category color
   static Color getCategoryColor(String category) {
     switch (category.toLowerCase()) {
